@@ -1,0 +1,298 @@
+import pygame
+import chess
+import random
+import sys
+import subprocess
+
+# Instructions for setting up the environment
+bash_script = """
+# Install required dependencies
+# Make sure you have Python installed, then run the following commands in your terminal:
+
+# Step 1: Install pygame and python-chess
+pip install pygame python-chess
+
+# Step 2: Download chess piece images and place them in an 'assets' folder.
+# The images should be named as follows:
+# White pieces: wP.png, wN.png, wB.png, wR.png, wQ.png, wK.png
+# Black pieces: bP.png, bN.png, bB.png, bR.png, bQ.png, bK.png
+"""
+
+print(bash_script)
+
+# Automatically install dependencies if needed
+def install_dependencies():
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pygame", "python-chess"])
+        print("Dependencies installed successfully!")
+    except subprocess.CalledProcessError:
+        print("An error occurred while installing dependencies.")
+
+# Initialize Pygame and the mixer for sounds
+pygame.init()
+pygame.mixer.init()
+
+# Constants
+WIDTH, HEIGHT = 640, 640
+SQUARE_SIZE = WIDTH // 8
+FPS = 60
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+LIGHT_SQUARE = (240, 217, 181)
+DARK_SQUARE = (181, 136, 99)
+HIGHLIGHT = (255, 0, 0)  # Red highlight for valid moves
+TEXT_COLOR = (255, 255, 255)  # White for text
+
+# Fonts
+FONT = pygame.font.SysFont("Arial", 32)
+END_GAME_FONT = pygame.font.SysFont("Arial", 48)
+
+# Chessboard setup
+board = chess.Board()
+
+# Create the display
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Chess Monkey")
+
+# Load piece images
+PIECE_IMAGES = {}
+PIECES = ["P", "N", "B", "R", "Q", "K"]
+for piece in PIECES:
+    for color in ["w", "b"]:
+        image = pygame.image.load(f"assets/{color}{piece}.png")
+        PIECE_IMAGES[f"{color}{piece}"] = pygame.transform.scale(image, (SQUARE_SIZE, SQUARE_SIZE))
+
+# Load sound effects
+move_sound = pygame.mixer.Sound("assets/sounds/move_sound.wav")
+capture_sound = pygame.mixer.Sound("assets/sounds/capture_sound.wav")
+check_sound = pygame.mixer.Sound("assets/sounds/check_sound.wav")
+checkmate_sound = pygame.mixer.Sound("assets/sounds/checkmate_sound.wav")
+draw_sound = pygame.mixer.Sound("assets/sounds/draw_sound.wav")
+
+# Settings variables
+show_valid_moves = True
+sound_enabled = True
+ai_difficulty = 3  # Minimax depth (higher = stronger AI)
+
+# Function to draw the board
+def draw_board():
+    for row in range(8):
+        for col in range(8):
+            color = LIGHT_SQUARE if (row + col) % 2 == 0 else DARK_SQUARE
+            pygame.draw.rect(screen, color, pygame.Rect(col * SQUARE_SIZE, row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE))
+            piece = board.piece_at(row * 8 + col)
+            if piece:
+                piece_color = 'w' if piece.color == chess.WHITE else 'b'
+                piece_symbol = piece.symbol().upper()
+                screen.blit(PIECE_IMAGES[f"{piece_color}{piece_symbol}"], 
+                            (col * SQUARE_SIZE, row * SQUARE_SIZE))
+
+# Function to highlight valid moves (in red)
+def draw_valid_moves(valid_moves):
+    for move in valid_moves:
+        to_square = move.to_square
+        row, col = to_square // 8, to_square % 8
+        pygame.draw.circle(screen, HIGHLIGHT, 
+                           (col * SQUARE_SIZE + SQUARE_SIZE // 2, row * SQUARE_SIZE + SQUARE_SIZE // 2), 15)
+
+# Function to animate the movement of a piece
+def animate_move(start_square, end_square, piece_image):
+    start_col, start_row = start_square % 8, start_square // 8
+    end_col, end_row = end_square % 8, end_square // 8
+    start_x, start_y = start_col * SQUARE_SIZE, start_row * SQUARE_SIZE
+    end_x, end_y = end_col * SQUARE_SIZE, end_row * SQUARE_SIZE
+
+    dx = (end_x - start_x) / 15
+    dy = (end_y - start_y) / 15
+
+    for frame in range(15):
+        draw_board()
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece:
+                piece_color = 'w' if piece.color == chess.WHITE else 'b'
+                piece_symbol = piece.symbol().upper()
+                square_col, square_row = square % 8, square // 8
+                if square != start_square:
+                    screen.blit(PIECE_IMAGES[f"{piece_color}{piece_symbol}"], (square_col * SQUARE_SIZE, square_row * SQUARE_SIZE))
+        screen.blit(piece_image, (start_x + dx * frame, start_y + dy * frame))
+        pygame.display.flip()
+        pygame.time.delay(30)
+
+# Function to display the end game message
+def display_end_game_message(message):
+    text_surface = END_GAME_FONT.render(message, True, TEXT_COLOR)
+    text_rect = text_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+    screen.blit(text_surface, text_rect)
+    pygame.display.flip()
+
+# Function to display the end game prompt (restart or quit)
+def end_game_prompt():
+    font = pygame.font.SysFont("Arial", 36)
+    
+    # Create the text for the prompt
+    restart_text = font.render("Press 'R' to Restart or 'Q' to Quit", True, TEXT_COLOR)
+    restart_rect = restart_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 50))
+    
+    # Display the prompt
+    screen.blit(restart_text, restart_rect)
+    pygame.display.flip()
+    
+    # Wait for player input (R for restart, Q for quit)
+    waiting_for_input = True
+    while waiting_for_input:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:  # Restart the game
+                    return "restart"
+                elif event.key == pygame.K_q:  # Quit the game
+                    pygame.quit()
+                    sys.exit()
+
+# Minimax algorithm to choose the best AI move
+def minimax(board, depth, maximizing_player):
+    if depth == 0 or board.is_game_over():
+        return evaluate_board(board), None  # Return the evaluation score and no move
+
+    legal_moves = list(board.legal_moves)
+    random.shuffle(legal_moves)
+
+    best_move = None
+    if maximizing_player:
+        max_eval = float("-inf")
+        for move in legal_moves:
+            board.push(move)
+            eval, _ = minimax(board, depth - 1, False)
+            board.pop()
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+        return max_eval, best_move
+    else:
+        min_eval = float("inf")
+        for move in legal_moves:
+            board.push(move)
+            eval, _ = minimax(board, depth - 1, True)
+            board.pop()
+            if eval < min_eval:
+                min_eval = eval
+                best_move = move
+        return min_eval, best_move
+
+# Evaluate the board state
+def evaluate_board(board):
+    if board.is_checkmate():
+        return -1000 if board.turn == chess.WHITE else 1000
+    if board.is_stalemate() or board.is_insufficient_material():
+        return 0
+    return random.randint(-10, 10)
+
+# Get the best move for the AI
+def get_ai_move():
+    _, best_move = minimax(board, ai_difficulty, True)  # Use current AI difficulty level
+    return best_move
+
+# Play sound
+def play_sound(sound):
+    if sound_enabled:
+        sound.play()
+
+# Main game loop
+def game_loop():
+    global show_valid_moves, sound_enabled, ai_difficulty
+    selected_square = None
+    valid_moves = []
+    clock = pygame.time.Clock()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                col, row = pygame.mouse.get_pos()
+                col //= SQUARE_SIZE
+                row //= SQUARE_SIZE
+                square = row * 8 + col
+
+                if selected_square is None:
+                    piece = board.piece_at(square)
+                    if piece and piece.color == board.turn:
+                        selected_square = square
+                        valid_moves = [move for move in board.legal_moves if move.from_square == selected_square]
+                else:
+                    if square in [move.to_square for move in valid_moves]:
+                        move = next(move for move in valid_moves if move.to_square == square)
+                        piece = board.piece_at(selected_square)
+                        piece_image = PIECE_IMAGES[f"{'w' if piece.color == chess.WHITE else 'b'}{piece.symbol().upper()}"]
+                        animate_move(selected_square, square, piece_image)
+                        play_sound(move_sound)  # Play move sound
+                        board.push(move)
+                        selected_square = None
+                        valid_moves = []
+
+                        if board.is_game_over():
+                            # Play game over sound effects
+                            if board.is_checkmate():
+                                play_sound(checkmate_sound)
+                                display_end_game_message("Checkmate")
+                            elif board.is_stalemate():
+                                play_sound(draw_sound)
+                                display_end_game_message("Stalemate (Draw)")
+                            elif board.is_insufficient_material():
+                                play_sound(draw_sound)
+                                display_end_game_message("Insufficient Material (Draw)")
+                            else:
+                                play_sound(draw_sound)
+                                display_end_game_message("Game Over")
+                            pygame.time.delay(2000)  # Pause before showing the prompt
+
+                            # Show the end game prompt (restart or quit)
+                            result = end_game_prompt()
+
+                            if result == "restart":
+                                # Reset the board and start a new game
+                                board.reset()
+                                break  # Restart the game loop
+                            else:
+                                pygame.quit()
+                                sys.exit()
+
+                        else:
+                            ai_move = get_ai_move()
+                            start_square = ai_move.from_square
+                            end_square = ai_move.to_square
+                            piece = board.piece_at(start_square)
+                            piece_image = PIECE_IMAGES[f"{'w' if piece.color == chess.WHITE else 'b'}{piece.symbol().upper()}"]
+                            animate_move(start_square, end_square, piece_image)
+                            play_sound(move_sound)  # Play move sound for AI
+                            board.push(ai_move)
+
+                    else:
+                        selected_square = None
+                        valid_moves = []
+
+        # Draw the board
+        draw_board()
+
+        # Highlight valid moves if enabled
+        if selected_square and show_valid_moves:
+            draw_valid_moves(valid_moves)
+
+        # Refresh the display
+        pygame.display.flip()
+        clock.tick(FPS)
+
+if __name__ == "__main__":
+    # Optionally, install dependencies automatically (useful when running in new environments)
+    install_dependencies()
+
+    game_loop()
+
